@@ -14,7 +14,7 @@ from typing import List, Dict, Tuple, Optional
 
 # === Try importing optional dependencies ===
 try:
-import paq  # Python binding for PAQ9a (pip install paq)
+    import paq  # Python binding for PAQ9a (pip install paq)
 except ImportError:
     paq = None
     logging.warning("paq module not found. PAQ compression will be disabled.")
@@ -239,6 +239,203 @@ class StateTable:
         ]
 
 
+# === Algorithm 15: Zero-Line Deletion + Bit-Packing ===
+class Algo15:
+    """Same as before — omitted for brevity (copy from previous version)"""
+    @staticmethod
+    def _split_line(line: str) -> Tuple[str, str]:
+        parts = line.lstrip().split(maxsplit=1)
+        if not parts:
+            return "", line
+        token, rest = parts[0], line[len(parts[0]):]
+        return token, line[:len(parts[0])] + rest
+
+    @staticmethod
+    def compress(data: bytes) -> bytes:
+        try:
+            text = data.decode('utf-8')
+        except UnicodeDecodeError:
+            return b''
+        lines = text.splitlines(keepends=True)
+        kept, bitmap = [], []
+        for ln in lines:
+            token, _ = Algo15._split_line(ln)
+            if token == "0":
+                bitmap.append(0)
+            else:
+                bitmap.append(1)
+                kept.append(ln)
+        bitmap_bytes = bytearray()
+        for i in range(0, len(bitmap), 8):
+            byte = 0
+            for b in range(8):
+                if i + b < len(bitmap):
+                    byte = (byte << 1) | bitmap[i + b]
+            bitmap_bytes.append(byte)
+        header = len(lines).to_bytes(2, "big")
+        payload = "".join(kept).encode('utf-8')
+        return header + bytes(bitmap_bytes) + payload
+
+    @staticmethod
+    def decompress(data: bytes) -> bytes:
+        if len(data) < 2:
+            return b''
+        total_lines = int.from_bytes(data[:2], "big")
+        pos = 2
+        bitmap = []
+        while len(bitmap) < total_lines and pos < len(data):
+            byte = data[pos]
+            pos += 1
+            for _ in range(8):
+                if len(bitmap) < total_lines:
+                    bitmap.append((byte >> (7 - _)) & 1)
+        kept_text_bytes = data[pos:]
+        try:
+            kept_text = kept_text_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            return b''
+        kept_lines = kept_text.splitlines(keepends=True)
+        result, kept_idx = [], 0
+        last_newline = "\n"
+        for flag in bitmap:
+            if flag:
+                line = kept_lines[kept_idx]
+                result.append(line)
+                last_newline = line.splitlines(keepends=True)[-1][-1] if line else "\n"
+                kept_idx += 1
+            else:
+                result.append(last_newline)
+        return "".join(result).encode('utf-8')
+
+
+# === Algorithm 11: 4-bit Nibble Packing with Bias-Shift (like Algo14 but for 4-bit) ===
+class Algo11:
+    """
+    Packs bytes into 4-bit nibbles using variable-length prefix:
+      00 → 0-3  (2-bit payload)
+      01 → 4-15 (4-bit payload)
+      10 → 16-63 (6-bit payload)
+      11 → 64-255 (8-bit payload)
+    Then applies PRNG-based XOR scrambling.
+    """
+
+    @staticmethod
+    def _pack(b: int) -> Tuple[int, int]:
+        if b < 4:
+            prefix, payload, bits = 0b00, b, 2
+        elif b < 16:
+            prefix, payload, bits = 0b01, b, 4
+        elif b < 64:
+            prefix, payload, bits = 0b10, b, 6
+        else:
+            prefix, payload, bits = 0b11, b, 8
+        packed = (prefix << bits) | payload
+        return packed, bits + 2
+
+    @staticmethod
+    def _unpack(bitstream: str, pos: int) -> Tuple[int, int]:
+        prefix = int(bitstream[pos:pos+2], 2)
+        pos += 2
+        if prefix == 0b00:
+            payload = int(bitstream[pos:pos+2], 2); pos += 2
+        elif prefix == 0b01:
+            payload = int(bitstream[pos:pos+4], 2); pos += 4
+        elif prefix == 0b10:
+            payload = int(bitstream[pos:pos+6], 2); pos += 6
+        else:
+            payload = int(bitstream[pos:pos+8], 2); pos += 8
+        return payload, pos
+
+    @staticmethod
+    def compress(data: bytes, repeat: int = 100) -> bytes:
+        if not data:
+            return b''
+        # Scramble
+        xor_key = bytearray(data)
+        prng = random.Random(len(data))
+        for _ in range(repeat):
+            key = prng.randint(0, 255)
+            for i in range(len(xor_key)):
+                xor_key[i] ^= key
+        data = bytes(xor_key)
+
+        bit_chunks = []
+        for b in data:
+            packed, total_bits = Algo11._pack(b)
+            bit_chunks.append(format(packed, f'0{total_bits}b'))
+        all_bits = ''.join(bit_chunks)
+        padding = (8 - len(all_bits) % 8) % 8
+        all_bits += '0' * padding
+        packed_bytes = int(all_bits, 2).to_bytes((len(all_bits) + 7) // 8, 'big')
+        return bytes([1]) + packed_bytes  # marker 1 = compressed
+
+    @staticmethod
+    def decompress(data: bytes, repeat: int = 100) -> bytes:
+        if len(data) < 1 or data[0] != 1:
+            return data[1:] if len(data) > 1 else b''
+        bit_str = bin(int.from_bytes(data[1:], 'big'))[2:].zfill(len(data[1:]) * 8)
+        pos = 0
+        unpacked = []
+        while pos + 2 <= len(bit_str):
+            byte_val, new_pos = Algo11._unpack(bit_str, pos)
+            if byte_val > 255:
+                break
+            unpacked.append(byte_val)
+            pos = new_pos
+        out = bytearray(unpacked)
+        prng = random.Random(len(out))
+        for _ in range(repeat):
+            key = prng.randint(0, 255)
+            for i in range(len(out)):
+                out[i] ^= key
+        return bytes(out)
+
+
+# === Algorithm 4: 1-Byte Combination Packing (Byte Pairing) ===
+class Algo4:
+    """
+    Combines two bytes into one using:
+      - If both < 16 → pack into 4 bits each → 1 byte
+      - Else store as two bytes
+    Uses a 1-bit flag per pair.
+    """
+
+    @staticmethod
+    def compress(data: bytes) -> bytes:
+        if not data:
+            return b''
+        result = bytearray()
+        i = 0
+        while i < len(data):
+            a = data[i]
+            b = data[i + 1] if i + 1 < len(data) else 0
+            if a < 16 and b < 16:
+                packed = (a << 4) | b
+                result.append(0x80 | packed)  # MSB=1 → packed
+                i += 2
+            else:
+                result.append(a)  # MSB=0 → literal
+                i += 1
+        return bytes(result)
+
+    @staticmethod
+    def decompress(data: bytes) -> bytes:
+        result = bytearray()
+        i = 0
+        while i < len(data):
+            b = data[i]
+            if b & 0x80:  # packed
+                packed = b & 0x7F
+                a = (packed >> 4) & 0x0F
+                b_val = packed & 0x0F
+                result.append(a)
+                result.append(b_val)
+            else:
+                result.append(b)
+            i += 1
+        return bytes(result)
+
+
 # === PAQJP Compressor (Dictionary-Free) ===
 class PAQJPCompressor:
     def __init__(self):
@@ -370,22 +567,10 @@ class PAQJPCompressor:
         return self.transform_03(data)
 
     def transform_04(self, data, repeat=100):
-        if not data:
-            return b''
-        transformed = bytearray(data)
-        for _ in range(repeat):
-            for i in range(len(transformed)):
-                transformed[i] = (transformed[i] - (i % 256)) % 256
-        return bytes(transformed)
+        return Algo4.compress(data)
 
     def reverse_transform_04(self, data, repeat=100):
-        if not data:
-            return b''
-        transformed = bytearray(data)
-        for _ in range(repeat):
-            for i in range(len(transformed)):
-                transformed[i] = (transformed[i] + (i % 256)) % 256
-        return bytes(transformed)
+        return Algo4.decompress(data)
 
     def transform_05(self, data, shift=3):
         if not data:
@@ -565,6 +750,12 @@ class PAQJPCompressor:
                 transformed[i] ^= n
         return bytes(transformed)
 
+    def transform_11(self, data, repeat=100):
+        return Algo11.compress(data, repeat)
+
+    def reverse_transform_11(self, data, repeat=100):
+        return Algo11.decompress(data, repeat)
+
     def transform_12(self, data, repeat=100):
         if not data:
             return b''
@@ -582,13 +773,11 @@ class PAQJPCompressor:
     def transform_13(self, data):
         if not data:
             return b''
-        # Use 1-byte header: r = 1 to 255
         r = (len(data) % 255) + 1
         transformed = bytearray(data)
         for _ in range(r):
             for i in range(len(transformed)):
                 transformed[i] ^= (i % 256)
-        # Variable-length bit packing
         bit_codes = []
         for b in transformed:
             if b < 4:
@@ -636,44 +825,6 @@ class PAQJPCompressor:
                 rev[j] ^= (j % 256)
         return bytes(rev)
 
-    # === Algorithm 14: Bias-Shift Variable-Length Bit Packing ===
-    def _pack_14(self, byte_val: int) -> Tuple[int, int]:
-        if byte_val < 4:
-            prefix = 0b00
-            payload = byte_val
-            bits = 2
-        elif byte_val < 16:
-            prefix = 0b01
-            payload = byte_val
-            bits = 4
-        elif byte_val < 64:
-            prefix = 0b10
-            payload = byte_val
-            bits = 6
-        else:
-            prefix = 0b11
-            payload = byte_val
-            bits = 8
-        packed = (prefix << bits) | payload
-        return packed, bits + 2
-
-    def _unpack_14(self, bitstream: str, pos: int) -> Tuple[int, int]:
-        prefix = int(bitstream[pos:pos+2], 2)
-        pos += 2
-        if prefix == 0b00:
-            payload = int(bitstream[pos:pos+2], 2)
-            pos += 2
-        elif prefix == 0b01:
-            payload = int(bitstream[pos:pos+4], 2)
-            pos += 4
-        elif prefix == 0b10:
-            payload = int(bitstream[pos:pos+6], 2)
-            pos += 6
-        else:  # 0b11
-            payload = int(bitstream[pos:pos+8], 2)
-            pos += 8
-        return payload, pos
-
     def transform_14(self, data: bytes, repeat: int = 100) -> bytes:
         if not data:
             return b''
@@ -693,7 +844,7 @@ class PAQJPCompressor:
         padding = (8 - len(all_bits) % 8) % 8
         all_bits += '0' * padding
         packed_bytes = int(all_bits, 2).to_bytes((len(all_bits) + 7) // 8, 'big')
-        return bytes([1]) + packed_bytes  # 1 = compressed
+        return bytes([1]) + packed_bytes
 
     def reverse_transform_14(self, data: bytes, repeat: int = 100) -> bytes:
         if len(data) < 1 or data[0] != 1:
@@ -714,6 +865,31 @@ class PAQJPCompressor:
             for i in range(len(out)):
                 out[i] ^= key
         return bytes(out)
+
+    def _pack_14(self, byte_val: int) -> Tuple[int, int]:
+        if byte_val < 4:
+            prefix = 0b00; payload = byte_val; bits = 2
+        elif byte_val < 16:
+            prefix = 0b01; payload = byte_val; bits = 4
+        elif byte_val < 64:
+            prefix = 0b10; payload = byte_val; bits = 6
+        else:
+            prefix = 0b11; payload = byte_val; bits = 8
+        packed = (prefix << bits) | payload
+        return packed, bits + 2
+
+    def _unpack_14(self, bitstream: str, pos: int) -> Tuple[int, int]:
+        prefix = int(bitstream[pos:pos+2], 2)
+        pos += 2
+        if prefix == 0b00:
+            payload = int(bitstream[pos:pos+2], 2); pos += 2
+        elif prefix == 0b01:
+            payload = int(bitstream[pos:pos+4], 2); pos += 4
+        elif prefix == 0b10:
+            payload = int(bitstream[pos:pos+6], 2); pos += 6
+        else:
+            payload = int(bitstream[pos:pos+8], 2); pos += 8
+        return payload, pos
 
     def generate_transform_method(self, n):
         self.create_quantum_transform_circuit(n, 1048576)
@@ -741,9 +917,10 @@ class PAQJPCompressor:
 
         fast_transformations = [
             (1, self.transform_04), (2, self.transform_01), (3, self.transform_03),
-            (5, self.transform_05), (6, self.transform_06), (7, self.transform_07),
-            (8, self.transform_08), (9, self.transform_09), (12, self.transform_12),
-            (13, self.transform_13), (14, self.transform_14),
+            (4, Algo4.compress), (5, self.transform_05), (6, self.transform_06),
+            (7, self.transform_07), (8, self.transform_08), (9, self.transform_09),
+            (11, self.transform_11), (12, self.transform_12), (13, self.transform_13),
+            (14, self.transform_14), (15, Algo15.compress),
         ]
         slow_transformations = fast_transformations + [
             (10, self.transform_10),
@@ -754,7 +931,7 @@ class PAQJPCompressor:
             transformations = [(0, self.transform_genomecompress)] + transformations
 
         if filetype in [Filetype.JPEG, Filetype.TEXT]:
-            prioritized = [(7, self.transform_07), (8, self.transform_08), (9, self.transform_09), (12, self.transform_12), (13, self.transform_13), (14, self.transform_14)]
+            prioritized = [(4, Algo4.compress), (7, self.transform_07), (8, self.transform_08), (9, self.transform_09), (11, self.transform_11), (12, self.transform_12), (13, self.transform_13), (14, self.transform_14)]
             if is_dna:
                 prioritized = [(0, self.transform_genomecompress)] + prioritized
             if mode == "slow":
@@ -768,6 +945,8 @@ class PAQJPCompressor:
 
         for marker, transform in transformations:
             transformed = transform(data)
+            if not transformed:
+                continue
             for _, compress_func in methods:
                 try:
                     compressed = compress_func(transformed)
@@ -795,11 +974,13 @@ class PAQJPCompressor:
         reverse_transforms = {
             0: self.reverse_transform_genomecompress,
             1: self.reverse_transform_04, 2: self.reverse_transform_01,
-            3: self.reverse_transform_03, 5: self.reverse_transform_05,
-            6: self.reverse_transform_06, 7: self.reverse_transform_07,
-            8: self.reverse_transform_08, 9: self.reverse_transform_09,
-            10: self.reverse_transform_10, 12: self.reverse_transform_12,
+            3: self.reverse_transform_03, 4: Algo4.decompress,
+            5: self.reverse_transform_05, 6: self.reverse_transform_06,
+            7: self.reverse_transform_07, 8: self.reverse_transform_08,
+            9: self.reverse_transform_09, 10: self.reverse_transform_10,
+            11: self.reverse_transform_11, 12: self.reverse_transform_12,
             13: self.reverse_transform_13, 14: self.reverse_transform_14,
+            15: Algo15.decompress,
         }
         reverse_transforms.update({i: self.generate_transform_method(i)[1] for i in range(16, 256)})
 
@@ -807,11 +988,14 @@ class PAQJPCompressor:
             return b'', None
 
         try:
-            decompressed = self.paq_decompress(compressed_data)
-            if not decompressed:
-                return b'', None
-            result = reverse_transforms[method_marker](decompressed)
-            return result, method_marker
+            if method_marker in [4, 11, 15]:
+                return reverse_transforms[method_marker](compressed_data), method_marker
+            else:
+                decompressed = self.paq_decompress(compressed_data)
+                if not decompressed:
+                    return b'', None
+                result = reverse_transforms[method_marker](decompressed)
+                return result, method_marker
         except Exception as e:
             logging.error(f"Decompression failed: {e}")
             return b'', None
