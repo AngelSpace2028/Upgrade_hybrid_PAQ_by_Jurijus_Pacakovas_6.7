@@ -5,7 +5,7 @@
 PAQJP_6.7_fixed_01_plus
 Dictionary-Free Lossless Compressor
 Authors: Jurijus Pacalovas, Vincent Geoghegan
-New Algorithms: 04 (byte subtract), 11 (Fibonacci XOR), 14 (rotate left), 15 (540-byte pi key)
+New Algorithms: 04 (byte subtract), 11 (Fibonacci XOR + adjustment), 14 (rotate left), 15 (540-byte pi key)
 All transforms are lossless and deterministic.
 """
 
@@ -609,8 +609,24 @@ class PAQJPCompressor:
         return bytes(transformed)
 
     # ------------------------------------------------------------------
-    # ALGORITHM 11 – NEW – XOR with Fibonacci sequence (mod 256)
+    # ALGORITHM 11 – NEW – Fibonacci XOR + special adjustment
     # ------------------------------------------------------------------
+    def _adjust_11(self, b: int) -> int:
+        """Apply the required post-XOR adjustment."""
+        if b <= 128:                     # ≤128 → subtract 128
+            return (b - 128) & 0xFF
+        elif 64 <= b <= 127:             # 64-127 → add 128
+            return (b + 128) & 0xFF
+        else:                            # 129-255 → keep unchanged
+            return b
+
+    def _reverse_adjust_11(self, b: int) -> int:
+        """Reverse the adjustment (exact inverse)."""
+        if b >= 128:                     # was in 64-127 → subtract 128
+            return (b - 128) & 0xFF
+        else:                            # was ≤128 → add 128
+            return (b + 128) & 0xFF
+
     def transform_11(self, data, repeat=100):
         if not data:
             return b''
@@ -618,14 +634,27 @@ class PAQJPCompressor:
         fib_len = len(self.fibonacci)
         for _ in range(repeat):
             for i in range(len(transformed)):
-                transformed[i] ^= (self.fibonacci[i % fib_len] % 256)
+                fib_val = self.fibonacci[i % fib_len] % 256
+                xored = transformed[i] ^ fib_val
+                transformed[i] = self._adjust_11(xored)
         return bytes(transformed)
 
     def reverse_transform_11(self, data, repeat=100):
-        return self.transform_11(data, repeat)
+        if not data:
+            return b''
+        transformed = bytearray(data)
+        fib_len = len(self.fibonacci)
+        for _ in range(repeat):
+            for i in range(len(transformed)):
+                # reverse adjustment first
+                rev_adj = self._reverse_adjust_11(transformed[i])
+                # then XOR with same Fibonacci value
+                fib_val = self.fibonacci[i % fib_len] % 256
+                transformed[i] = rev_adj ^ fib_val
+        return bytes(transformed)
 
     # ------------------------------------------------------------------
-    # ALGORITHM 12 (unchanged)
+    # ALGORITHM 12 (unchanged – pure Fibonacci XOR)
     # ------------------------------------------------------------------
     def transform_12(self, data, repeat=100):
         if not data:
@@ -994,7 +1023,7 @@ if __name__ == "__main__":
     d4 = compressor.reverse_transform_04(c4, repeat=1)
     assert d4 == t, "Algo04 failed!"
 
-    # Test Algo 11
+    # Test Algo 11 (new logic)
     c11 = compressor.transform_11(t, repeat=1)
     d11 = compressor.reverse_transform_11(c11, repeat=1)
     assert d11 == t, "Algo11 failed!"
