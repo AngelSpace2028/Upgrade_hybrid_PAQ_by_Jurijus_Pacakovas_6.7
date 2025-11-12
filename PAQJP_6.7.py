@@ -33,7 +33,7 @@ logging.basicConfig(
 )
 
 # === Constants ===
-PROGNAME = "PAQJP_6.6_fixed_01"  # Fixed Algorithm 01
+PROGNAME = "PAQJP_6.7_fixed_01"  # Fixed Algorithm 01
 PI_DIGITS_FILE = "pi_digits.txt"
 PRIMES = [p for p in range(2, 256) if all(p % d != 0 for d in range(2, int(p**0.5)+1))]
 MEM = 1 << 15
@@ -793,7 +793,7 @@ def detect_filetype(filename: str) -> Filetype:
 
 
 def main():
-    print("PAQJP_6.6_fixed_01 Compression System (Dictionary-Free)")
+    print("PAQJP_6.7_fixed_01 Compression System (Dictionary-Free)")
     print("Created by Jurijus Pacalovas and Vincent Geoghegan")
     print("Algorithm 01: FIXED – deterministic & lossless")
     print("Options:")
