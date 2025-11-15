@@ -808,6 +808,9 @@ class PAQJPCompressor:
         except:
             pass
 
+        # Apply Algorithm 07 first as requested
+        data = self.transform_07(data)
+        
         fast_transformations = [
             (1, self.transform_04), (2, self.transform_01), (3, self.transform_03),
             (5, self.transform_05), (6, self.transform_06), (7, self.transform_07),
@@ -886,6 +889,8 @@ class PAQJPCompressor:
             if not decompressed:
                 return b'', None
             result = reverse_transforms[method_marker](decompressed)
+            # Apply reverse Algorithm 07 after other transforms
+            result = self.reverse_transform_07(result)
             return result, method_marker
         except Exception as e:
             logging.error(f"Decompression failed: {e}")
