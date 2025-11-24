@@ -1,4 +1,4 @@
-Quantum PAQJP_6.7 is Quantum Software
+Quantum Computer PAQJP_6.7 is Quantum Computer Software
 
 PAQJP_6.7 losslessness 
 Lossless 100% and without corrupted files (choose the best of 256 transformations on the 9 qubits level and extract back)  done 15 Nov 2025
