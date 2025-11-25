@@ -3,7 +3,7 @@
 
 """
 ZLIBJP_6.7_fixed_01_plus
-Dictionary-Free Lossless Compressor
+Dictionary-Free Lossless Compressor with zlib level 9
 Authors: Jurijus Pacalovas, Vincent Geoghegan
 
 ALGORITHM 11 REWRITTEN:
@@ -25,16 +25,14 @@ import heapq
 import binascii
 import logging
 import hashlib
+import zlib
 from datetime import datetime
 from enum import Enum
 from typing import List, Dict, Tuple, Optional
 
 # === Try importing optional dependencies ===
-try:
-    import zlib  # pip install zlib
-except ImportError:
-    zlib = None
-    logging.warning("zlib module not found. ZLIB compression will be disabled.")
+# zlib is built-in to Python, no need to try import
+# Remove the problematic try-except block for zlib
 
 try:
     import qiskit
@@ -55,6 +53,7 @@ PI_DIGITS_FILE = "pi_digits.txt"
 PRIMES = [p for p in range(2, 256) if all(p % d != 0 for d in range(2, int(p**0.5)+1))]
 MEM = 1 << 15
 MIN_BITS = 2
+ZLIB_LEVEL = 9  # Maximum compression level
 
 # === DNA Encoding Table ===
 DNA_ENCODING_TABLE = {
@@ -287,32 +286,32 @@ class ZLIBJPCompressor:
         return circuit
 
     # ------------------------------------------------------------------
-    # ZLIB helpers
+    # zlib helpers (level 9) - FIXED: Remove duplicate methods
     # ------------------------------------------------------------------
     def zlib_compress(self, data):
-        if not data or zlib is None:
+        if not data:
             return None
         try:
             if isinstance(data, bytearray):
                 data = bytes(data)
             elif not isinstance(data, bytes):
                 raise TypeError(f"Expected bytes or bytearray, got {type(data)}")
-            compressed = zlib.compress(data)
-            logging.info("ZLIB9a compression complete")
+            compressed = zlib.compress(data, level=ZLIB_LEVEL)
+            logging.info(f"zlib compression complete (level {ZLIB_LEVEL})")
             return compressed
         except Exception as e:
-            logging.error(f"ZLIB9a compression failed: {e}")
+            logging.error(f"zlib compression failed: {e}")
             return None
 
     def zlib_decompress(self, data):
-        if not data or zlib is None:
+        if not data:
             return None
         try:
             decompressed = zlib.decompress(data)
-            logging.info("ZLIB9a decompression complete")
+            logging.info("zlib decompression complete")
             return decompressed
         except Exception as e:
-            logging.error(f"ZLIB9a decompression failed: {e}")
+            logging.error(f"zlib decompression failed: {e}")
             return None
 
     # ------------------------------------------------------------------
@@ -827,7 +826,7 @@ class ZLIBJPCompressor:
         return transform, reverse_transform
 
     # ------------------------------------------------------------------
-    # Compression / decompression core
+    # Compression / decompression core - FIXED: Remove duplicate zlib calls
     # ------------------------------------------------------------------
     def compress_with_best_method(self, data, filetype, input_filename, mode="slow", use_quantum=False):
         if not data:
@@ -884,14 +883,16 @@ class ZLIBJPCompressor:
                 
             transformations = prioritized + [t for t in transformations if t[0] not in [p[0] for p in prioritized]]
 
-        methods = [('zlib', self.zlib_compress)] if zlib else []
+        # Use zlib level 9 as primary compressor
+        methods = [('zlib', self.zlib_compress)]
+            
         best_compressed = None
         best_size = float('inf')
         best_marker = None
 
         for marker, transform in transformations:
             transformed = transform(data)
-            for _, compress_func in methods:
+            for method_name, compress_func in methods:
                 try:
                     compressed = compress_func(transformed)
                     if compressed is None:
@@ -900,8 +901,9 @@ class ZLIBJPCompressor:
                         best_size = len(compressed)
                         best_compressed = compressed
                         best_marker = marker
+                        logging.info(f"New best: transform {marker} with {method_name} - {best_size} bytes")
                 except Exception as e:
-                    logging.warning(f"Compression failed with transform {marker}: {e}")
+                    logging.warning(f"Compression failed with transform {marker} and {method_name}: {e}")
 
         if best_compressed is None:
             return bytes([0]) + data
@@ -937,9 +939,12 @@ class ZLIBJPCompressor:
             return b'', None
 
         try:
+            # Use zlib decompression
             decompressed = self.zlib_decompress(compressed_data)
+                
             if not decompressed:
                 return b'', None
+                
             result = reverse_transforms[method_marker](decompressed)
             # Apply reverse Algorithm 07 after other transforms
             result = self.reverse_transform_07(result)
@@ -961,7 +966,10 @@ class ZLIBJPCompressor:
             compressed = self.compress_with_best_method(data, filetype, input_file, mode, use_quantum)
             with open(output_file, 'wb') as f:
                 f.write(compressed)
-            logging.info(f"Compressed {input_file} → {output_file} ({len(compressed)} bytes)")
+            orig_size = len(data)
+            comp_size = len(compressed)
+            ratio = (comp_size / orig_size) * 100 if orig_size > 0 else 0
+            logging.info(f"Compressed {input_file} → {output_file} ({comp_size} bytes, {ratio:.2f}% of original)")
             return True
         except Exception as e:
             logging.error(f"Compression failed: {e}")
@@ -973,12 +981,14 @@ class ZLIBJPCompressor:
                 data = f.read()
             if not data:
                 return False
-            decompressed, _ = self.decompress_with_best_method(data, use_quantum)
+            decompressed, method_marker = self.decompress_with_best_method(data, use_quantum)
             if not decompressed:
                 return False
             with open(output_file, 'wb') as f:
                 f.write(decompressed)
-            logging.info(f"Decompressed {input_file} → {output_file} ({len(decompressed)} bytes)")
+            comp_size = len(data)
+            decomp_size = len(decompressed)
+            logging.info(f"Decompressed {input_file} → {output_file} ({decomp_size} bytes, method {method_marker})")
             return True
         except Exception as e:
             logging.error(f"Decompression failed: {e}")
@@ -1011,6 +1021,7 @@ def main():
     print("ZLIBJP_6.7_fixed_01_plus Compression System (Dictionary-Free)")
     print("Created by Jurijus Pacalovas and Vincent Geoghegan")
     print("Algorithm 11: 54 transforms → Algo12 → r×transform54 → **Algorithm 04 prefix**")
+    print(f"Using zlib level {ZLIB_LEVEL} compression")
     print("Options:")
     print("1 - Compress file")
     print("2 - Decompress file")
@@ -1100,7 +1111,13 @@ if __name__ == "__main__":
     d07 = comp.reverse_transform_07(c07)
     assert d07 == test_data, "Algorithm 07 failed!"
 
+    # Test zlib compression
+    zlib_compressed = comp.zlib_compress(test_data)
+    zlib_decompressed = comp.zlib_decompress(zlib_compressed)
+    assert zlib_decompressed == test_data, "zlib compression failed!"
+
     print("Algorithm 11 (54 + 12 + r×#54 + Algo04 prefix) PASSED")
     print("Algorithm 07 PASSED")
+    print(f"zlib level {ZLIB_LEVEL} compression PASSED")
     print("Starting ZLIBJP Compressor CLI...")
     main()
