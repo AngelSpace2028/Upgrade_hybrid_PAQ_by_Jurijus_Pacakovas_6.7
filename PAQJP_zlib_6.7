@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-PAQJP_6.7_fixed_01_plus
-Dictionary-Free Lossless Compressor with zlib level 9
+ZLIBJP_6.7_fixed_01_plus
+Dictionary-Free Lossless Compressor
 Authors: Jurijus Pacalovas, Vincent Geoghegan
 
 ALGORITHM 11 REWRITTEN:
@@ -25,17 +25,16 @@ import heapq
 import binascii
 import logging
 import hashlib
-import zlib
 from datetime import datetime
 from enum import Enum
 from typing import List, Dict, Tuple, Optional
 
 # === Try importing optional dependencies ===
 try:
-    import paq  # pip install paq
+    import zlib  # pip install zlib
 except ImportError:
-    paq = None
-    logging.warning("paq module not found. PAQ compression will be disabled.")
+    zlib = None
+    logging.warning("zlib module not found. ZLIB compression will be disabled.")
 
 try:
     import qiskit
@@ -51,12 +50,11 @@ logging.basicConfig(
 )
 
 # === Constants ===
-PROGNAME = "PAQJP_6.7_fixed_01_plus"
+PROGNAME = "ZLIBJP_6.7_fixed_01_plus"
 PI_DIGITS_FILE = "pi_digits.txt"
 PRIMES = [p for p in range(2, 256) if all(p % d != 0 for d in range(2, int(p**0.5)+1))]
 MEM = 1 << 15
 MIN_BITS = 2
-ZLIB_LEVEL = 9  # Maximum compression level
 
 # === DNA Encoding Table ===
 DNA_ENCODING_TABLE = {
@@ -247,8 +245,8 @@ class StateTable:
             [140, 252, 0, 41]
         ]
 
-# === PAQJP Compressor (Dictionary-Free) ===
-class PAQJPCompressor:
+# === ZLIBJP Compressor (Dictionary-Free) ===
+class ZLIBJPCompressor:
     def __init__(self):
         self.PI_DIGITS = PI_DIGITS
         self.PRIMES = PRIMES
@@ -289,61 +287,32 @@ class PAQJPCompressor:
         return circuit
 
     # ------------------------------------------------------------------
-    # zlib helpers (level 9)
+    # ZLIB helpers
     # ------------------------------------------------------------------
     def zlib_compress(self, data):
-        if not data:
+        if not data or zlib is None:
             return None
         try:
             if isinstance(data, bytearray):
                 data = bytes(data)
             elif not isinstance(data, bytes):
                 raise TypeError(f"Expected bytes or bytearray, got {type(data)}")
-            compressed = zlib.compress(data, level=ZLIB_LEVEL)
-            logging.info(f"zlib compression complete (level {ZLIB_LEVEL})")
+            compressed = zlib.compress(data)
+            logging.info("ZLIB9a compression complete")
             return compressed
         except Exception as e:
-            logging.error(f"zlib compression failed: {e}")
+            logging.error(f"ZLIB9a compression failed: {e}")
             return None
 
     def zlib_decompress(self, data):
-        if not data:
+        if not data or zlib is None:
             return None
         try:
             decompressed = zlib.decompress(data)
-            logging.info("zlib decompression complete")
+            logging.info("ZLIB9a decompression complete")
             return decompressed
         except Exception as e:
-            logging.error(f"zlib decompression failed: {e}")
-            return None
-
-    # ------------------------------------------------------------------
-    # PAQ helpers
-    # ------------------------------------------------------------------
-    def paq_compress(self, data):
-        if not data or paq is None:
-            return None
-        try:
-            if isinstance(data, bytearray):
-                data = bytes(data)
-            elif not isinstance(data, bytes):
-                raise TypeError(f"Expected bytes or bytearray, got {type(data)}")
-            compressed = paq.compress(data)
-            logging.info("PAQ9a compression complete")
-            return compressed
-        except Exception as e:
-            logging.error(f"PAQ9a compression failed: {e}")
-            return None
-
-    def paq_decompress(self, data):
-        if not data or paq is None:
-            return None
-        try:
-            decompressed = paq.decompress(data)
-            logging.info("PAQ9a decompression complete")
-            return decompressed
-        except Exception as e:
-            logging.error(f"PAQ9a decompression failed: {e}")
+            logging.error(f"ZLIB9a decompression failed: {e}")
             return None
 
     # ------------------------------------------------------------------
@@ -915,18 +884,14 @@ class PAQJPCompressor:
                 
             transformations = prioritized + [t for t in transformations if t[0] not in [p[0] for p in prioritized]]
 
-        # Use zlib level 9 as primary compressor, with PAQ as fallback
-        methods = [('zlib', self.zlib_compress)]
-        if paq:
-            methods.append(('paq', self.paq_compress))
-            
+        methods = [('zlib', self.zlib_compress)] if zlib else []
         best_compressed = None
         best_size = float('inf')
         best_marker = None
 
         for marker, transform in transformations:
             transformed = transform(data)
-            for method_name, compress_func in methods:
+            for _, compress_func in methods:
                 try:
                     compressed = compress_func(transformed)
                     if compressed is None:
@@ -935,9 +900,8 @@ class PAQJPCompressor:
                         best_size = len(compressed)
                         best_compressed = compressed
                         best_marker = marker
-                        logging.info(f"New best: transform {marker} with {method_name} - {best_size} bytes")
                 except Exception as e:
-                    logging.warning(f"Compression failed with transform {marker} and {method_name}: {e}")
+                    logging.warning(f"Compression failed with transform {marker}: {e}")
 
         if best_compressed is None:
             return bytes([0]) + data
@@ -973,14 +937,9 @@ class PAQJPCompressor:
             return b'', None
 
         try:
-            # Try zlib decompression first, then PAQ if available
             decompressed = self.zlib_decompress(compressed_data)
-            if not decompressed and paq:
-                decompressed = self.paq_decompress(compressed_data)
-                
             if not decompressed:
                 return b'', None
-                
             result = reverse_transforms[method_marker](decompressed)
             # Apply reverse Algorithm 07 after other transforms
             result = self.reverse_transform_07(result)
@@ -1002,10 +961,7 @@ class PAQJPCompressor:
             compressed = self.compress_with_best_method(data, filetype, input_file, mode, use_quantum)
             with open(output_file, 'wb') as f:
                 f.write(compressed)
-            orig_size = len(data)
-            comp_size = len(compressed)
-            ratio = (comp_size / orig_size) * 100 if orig_size > 0 else 0
-            logging.info(f"Compressed {input_file} → {output_file} ({comp_size} bytes, {ratio:.2f}% of original)")
+            logging.info(f"Compressed {input_file} → {output_file} ({len(compressed)} bytes)")
             return True
         except Exception as e:
             logging.error(f"Compression failed: {e}")
@@ -1017,14 +973,12 @@ class PAQJPCompressor:
                 data = f.read()
             if not data:
                 return False
-            decompressed, method_marker = self.decompress_with_best_method(data, use_quantum)
+            decompressed, _ = self.decompress_with_best_method(data, use_quantum)
             if not decompressed:
                 return False
             with open(output_file, 'wb') as f:
                 f.write(decompressed)
-            comp_size = len(data)
-            decomp_size = len(decompressed)
-            logging.info(f"Decompressed {input_file} → {output_file} ({decomp_size} bytes, method {method_marker})")
+            logging.info(f"Decompressed {input_file} → {output_file} ({len(decompressed)} bytes)")
             return True
         except Exception as e:
             logging.error(f"Decompression failed: {e}")
@@ -1054,15 +1008,14 @@ def detect_filetype(filename: str) -> Filetype:
 # CLI
 # ----------------------------------------------------------------------
 def main():
-    print("PAQJP_6.7_fixed_01_plus Compression System (Dictionary-Free)")
+    print("ZLIBJP_6.7_fixed_01_plus Compression System (Dictionary-Free)")
     print("Created by Jurijus Pacalovas and Vincent Geoghegan")
     print("Algorithm 11: 54 transforms → Algo12 → r×transform54 → **Algorithm 04 prefix**")
-    print(f"Using zlib level {ZLIB_LEVEL} compression")
     print("Options:")
     print("1 - Compress file")
     print("2 - Decompress file")
 
-    compressor = PAQJPCompressor()
+    compressor = ZLIBJPCompressor()
 
     try:
         choice = input("Enter 1 or 2: ").strip()
@@ -1134,7 +1087,7 @@ def main():
 # SELF-TEST
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
-    comp = PAQJPCompressor()
+    comp = ZLIBJPCompressor()
     test_data = b"Algorithm 11 test data: 54 + 12 + prefix!"
 
     # Test Algo 11 (now with Algorithm 04 prefix)
@@ -1147,13 +1100,7 @@ if __name__ == "__main__":
     d07 = comp.reverse_transform_07(c07)
     assert d07 == test_data, "Algorithm 07 failed!"
 
-    # Test zlib compression
-    zlib_compressed = comp.zlib_compress(test_data)
-    zlib_decompressed = comp.zlib_decompress(zlib_compressed)
-    assert zlib_decompressed == test_data, "zlib compression failed!"
-
     print("Algorithm 11 (54 + 12 + r×#54 + Algo04 prefix) PASSED")
     print("Algorithm 07 PASSED")
-    print(f"zlib level {ZLIB_LEVEL} compression PASSED")
-    print("Starting PAQJP Compressor CLI...")
+    print("Starting ZLIBJP Compressor CLI...")
     main()
